@@ -2657,7 +2657,9 @@ Each is answered once with `secret_result {id, ok, secrets?, replaced?, code?, e
 `secrets` (list only) holds `{name, description, updated_at}` rows; `replaced`
 (a successful put, revision 2) says whether an existing secret was replaced. Codes:
 `no_secret_tool` (the command is not installed), `not_found`, `invalid_name`,
-`invalid_request`, `exists`, `failed`.
+`invalid_request`, `exists`, `timeout`, `failed`. `timeout` means the command was
+stopped before it finished, so a put, describe or remove may have happened: the
+result is unknown, and the server lists the secrets again before retrying.
 
 - A name is 1 to 64 characters `[A-Za-z0-9._-]`, starting with a letter or
   digit, never `..`, checked before anything runs.
@@ -2665,6 +2667,14 @@ Each is answered once with `secret_result {id, ok, secrets?, replaced?, code?, e
   environment variable, never logged (only the operation and the name are), and
   never in an answer or an error.
 - The command runs without a shell.
+- A description is at most 1000 characters (code points, as the server counts
+  them) and never starts with `-`, which the command could read as an option.
+- `~/.secrets/.incoming` must be a real folder owned by the bridge's user (not a
+  symlink), else the put is refused. Files a stopped bridge left there are
+  removed when the bridge next starts (those older than five minutes).
+- The value travels from the app to the server's serve process as JSON, so the
+  app's relay URL (`AI_BRIDGE_RELAY_URL`) should be local or https, and HTTP
+  recorders such as Telescope should exclude that request.
 
 ## Heartbeat
 

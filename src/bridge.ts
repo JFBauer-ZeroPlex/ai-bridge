@@ -1065,6 +1065,8 @@ export class Bridge extends EventEmitter<BridgeEvents> {
 
   /** The machine's secret store (src/secrets/store.ts); made on first use. */
   private secretStore: MachineSecretStore | null = null;
+  /** Whether this process has cleared ~/.secrets/.incoming yet (connect()). */
+  private incomingSwept = false;
 
   /**
    * Answer one `secret_*` request with exactly one `secret_result`.
@@ -1340,6 +1342,17 @@ export class Bridge extends EventEmitter<BridgeEvents> {
     }
 
     this.startAttachmentSweeps();
+    // Once per process: a put the last run never finished may have left its
+    // file in ~/.secrets/.incoming; nothing else ever picks it up.
+    if (!this.incomingSwept) {
+      this.incomingSwept = true;
+      try {
+        const removed = (this.secretStore ??= new MachineSecretStore()).sweepIncoming();
+        if (removed > 0) log.info('Secret store: removed leftover incoming files', { removed });
+      } catch (error) {
+        log.warn('Secret store: could not clear leftover incoming files', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     // Once per process, like the sweeps: reconnects to the server come through
     // here too, and the upstream connections outlive them. Started in the
     // background; their tools join the bridge's own as each one comes up.

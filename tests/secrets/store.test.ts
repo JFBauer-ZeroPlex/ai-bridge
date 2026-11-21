@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MachineSecretStore, SecretRefusal } from '../../src/secrets/store.js';
@@ -164,5 +164,70 @@ if (args[0] === 'list') { process.stdout.write('github-token  2026-11-14  For: t
 
     await expect(secrets.list()).rejects.toMatchObject({ code: 'no_secret_tool' });
     expect(existsSync(join(store, '.incoming'))).toBe(false);
+  });
+});
+
+describe('review fixes', () => {
+  it('answers timeout, result unknown, when the command is stopped by the timeout', async () => {
+    fakeTool(`if (args[0] === 'remove') { const end = Date.now() + 5000; while (Date.now() < end); }`);
+    const secrets = new MachineSecretStore({ bin, store, timeoutMs: 300 });
+
+    const error = await secrets.remove('mailtrap').catch((e: unknown) => e);
+
+    expect((error as SecretRefusal).code).toBe('timeout');
+    expect((error as Error).message).toContain('result is unknown');
+    expect((error as Error).message).toContain('list the secrets again');
+  });
+
+  it('refuses a description starting with a dash before running anything', async () => {
+    fakeTool();
+    const secrets = new MachineSecretStore({ bin, store });
+
+    await expect(secrets.describe('mailtrap', '--force')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(secrets.describe('mailtrap', '\n -x')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(secrets.put('mailtrap', VALUE, '-d')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(callsMade()).toEqual([]);
+  });
+
+  it('counts a description in characters, not UTF-16 units', async () => {
+    fakeTool();
+    const secrets = new MachineSecretStore({ bin, store });
+
+    await secrets.describe('mailtrap', '\u{1F511}'.repeat(1000));
+    await expect(secrets.describe('mailtrap', '\u{1F511}'.repeat(1001))).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(callsMade()).toHaveLength(1);
+  });
+
+  it('refuses to write through a symlinked .incoming folder', async () => {
+    fakeTool();
+    const elsewhere = join(base, 'elsewhere');
+    mkdirSync(elsewhere, { mode: 0o700 });
+    symlinkSync(elsewhere, join(store, '.incoming'));
+    const secrets = new MachineSecretStore({ bin, store });
+
+    await expect(secrets.put('mailtrap', VALUE, null)).rejects.toMatchObject({ code: 'failed' });
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(callsMade()).toEqual([]);
+  });
+
+  it('clears old leftover files in .incoming, and leaves young ones and a symlinked folder alone', () => {
+    const incoming = join(store, '.incoming');
+    mkdirSync(incoming, { mode: 0o700 });
+    writeFileSync(join(incoming, 'old.abc'), VALUE);
+    utimesSync(join(incoming, 'old.abc'), new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+    writeFileSync(join(incoming, 'young.def'), VALUE);
+    const secrets = new MachineSecretStore({ bin, store });
+
+    expect(secrets.sweepIncoming()).toBe(1);
+    expect(readdirSync(incoming)).toEqual(['young.def']);
+
+    rmSync(incoming, { recursive: true });
+    const elsewhere = join(base, 'elsewhere');
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, 'keep'), 'x');
+    utimesSync(join(elsewhere, 'keep'), new Date(0), new Date(0));
+    symlinkSync(elsewhere, incoming);
+    expect(secrets.sweepIncoming()).toBe(0);
+    expect(readdirSync(elsewhere)).toEqual(['keep']);
   });
 });

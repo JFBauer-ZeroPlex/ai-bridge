@@ -22,7 +22,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -38,7 +38,7 @@ export const SECRET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const MAX_DESCRIPTION = 1000;
 export const MAX_VALUE_BYTES = 64 * 1024;
 
-export type SecretCode = 'no_secret_tool' | 'not_found' | 'invalid_name' | 'invalid_request' | 'exists' | 'failed';
+export type SecretCode = 'no_secret_tool' | 'not_found' | 'invalid_name' | 'invalid_request' | 'exists' | 'timeout' | 'failed';
 
 /** A refusal the server is told about, with a text that never holds a value. */
 export class SecretRefusal extends Error {
@@ -114,6 +114,8 @@ export class MachineSecretStore {
 
     const incoming = join(this.store, '.incoming');
     mkdirSync(incoming, { recursive: true, mode: 0o700 });
+    this.checkOwnFolder(this.store);
+    this.checkOwnFolder(incoming);
     chmodSync(this.store, 0o700);
     chmodSync(incoming, 0o700);
 
@@ -145,6 +147,41 @@ export class MachineSecretStore {
     if (done.code !== 0) throw this.refusal(done.stderr);
   }
 
+  /**
+   * Remove files a put left in `.incoming` when the bridge stopped mid-way
+   * (called once when the bridge starts), skipping any younger than
+   * `olderThanMs` that another bridge may still be using. Only a real folder of this user is
+   * touched: a symlink or someone else's folder is left alone.
+   */
+  sweepIncoming(olderThanMs = 5 * 60_000, now = Date.now()): number {
+    const incoming = join(this.store, '.incoming');
+    try {
+      this.checkOwnFolder(this.store);
+      this.checkOwnFolder(incoming);
+    } catch {
+      return 0;
+    }
+    let removed = 0;
+    for (const entry of readdirSync(incoming)) {
+      const path = join(incoming, entry);
+      // Another bridge on this machine may be mid-put: only files older than any put can take.
+      if (lstatSync(path).mtimeMs > now - olderThanMs) continue;
+      rmSync(path, { force: true, recursive: true });
+      removed++;
+    }
+
+    return removed;
+  }
+
+  /** Refuse a folder that is a symlink or not this user's: a value is never written through one. */
+  private checkOwnFolder(path: string): void {
+    const st = lstatSync(path);
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (st.isSymbolicLink() || !st.isDirectory() || (uid !== null && st.uid !== uid)) {
+      throw new SecretRefusal('failed', 'The secret store folder is not a plain folder of this user; nothing was written.');
+    }
+  }
+
   /** Whether the store's folder exists and only its owner can open it. */
   folderLocked(): boolean | null {
     try {
@@ -160,11 +197,15 @@ export class MachineSecretStore {
 
       return null;
     }
-    if (typeof value !== 'string' || value.length > MAX_DESCRIPTION || value.includes('\0')) {
+    // Counted in code points, as the server counts them (mb_strlen), not UTF-16 units.
+    if (typeof value !== 'string' || [...value].length > MAX_DESCRIPTION || value.includes('\0')) {
       throw new SecretRefusal('invalid_request', `A description is text of at most ${MAX_DESCRIPTION} characters.`);
     }
+    const text = value.replace(/[\r\n]+/g, ' ').trim();
+    // The `secret` command takes it as an argument: a leading dash could be read as an option.
+    if (text.startsWith('-')) throw new SecretRefusal('invalid_request', 'A description may not start with "-".');
 
-    return value.replace(/[\r\n]+/g, ' ').trim();
+    return text;
   }
 
   /** The tool's own message (it never prints a value) turned into a code. */
@@ -182,9 +223,17 @@ export class MachineSecretStore {
 
     return new Promise((resolve, reject) => {
       execFile(this.bin, args, { timeout: this.timeoutMs, maxBuffer: 1024 * 1024, shell: false }, (error, stdout, stderr) => {
-        const err = error as (NodeJS.ErrnoException & { code?: number | string }) | null;
+        const err = error as (NodeJS.ErrnoException & { code?: number | string | null; killed?: boolean; signal?: string | null }) | null;
         if (err && err.code === 'ENOENT') {
           reject(new SecretRefusal('no_secret_tool', 'The secret command is not installed on this machine.'));
+
+          return;
+        }
+        // Stopped by the timeout (or any signal): the command may have done its work.
+        if (err && (err.killed || err.signal)) {
+          reject(new SecretRefusal('timeout', args[0] === 'list'
+            ? 'The secret command did not finish in time.'
+            : 'The secret command did not finish in time, so the result is unknown: list the secrets again before retrying.'));
 
           return;
         }
