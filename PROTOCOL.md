@@ -21,6 +21,7 @@ Specification for the WebSocket protocol between `@tetrixdev/ai-bridge` (npm, cl
 - [Tool Calls](#tool-calls)
 - [MCP Apps](#mcp-apps)
 - [Upstream sign-in (OAuth)](#upstream-sign-in-oauth)
+- [Secrets on the machine](#secrets-on-the-machine)
 - [Heartbeat](#heartbeat)
 - [Error Handling](#error-handling)
 - [Provider Reference](#provider-reference)
@@ -328,6 +329,14 @@ This bridge implements [upstream sign-in (OAuth)](#upstream-sign-in-oauth). Abse
 ```
 
 This bridge keeps a server's [space files](#space-files) (`files_write`, `files_read`, `files_move`, `files_purge`); the number is the revision of those frames. Advertised whatever the allow-list says; a bridge with no allowed folder refuses each with `files_no_folder`. Absent from a bridge that predates it: a server tells the person to update it and sends none of the frames.
+
+#### Additive field: `machine_secrets`
+
+```json
+{ "type": "hello", "...": "...", "machine_secrets": { "revision": 1 } }
+```
+
+This bridge manages the machine's [secret store](#secrets-on-the-machine) for the person (`secret_list`, `secret_put`, `secret_describe`, `secret_remove`); `revision` versions those frames. A bridge that announces it also takes an appended `bridge_prompt.text` of up to 16 KB (8 KB before). Absent from a bridge that predates it: a server must not send the `secret_*` frames to it, tells the person to update the bridge, and keeps `bridge_prompt.text` within 8 KB.
 
 #### Additive field: `app_network`
 
@@ -2962,6 +2971,8 @@ The protocol version is exchanged during handshake (`hello.version`). The server
 **Web search does not bump the version.** `hello.web_search` and `options.web_search` are additive: an older bridge ignores the option (the turn runs without web search, as before), and an older server ignores the field. A server must not send the option to a bridge without `hello.web_search`.
 
 **Per-turn isolation does not bump the version.** `hello.turn_isolation` and `ai_request.cli_isolation` are additive; a server must not send the field to a bridge that did not advertise `turn_isolation`, since an older one ignores it and runs the turn with the connection's posture.
+
+**Machine secrets do not bump the version.** `hello.machine_secrets`, the four `secret_*` frames and `secret_result` are additive; their shape is versioned by `hello.machine_secrets.revision`, and a server must not send the `secret_*` frames to a bridge without it. The larger `bridge_prompt.text` cap (16 KB) comes with the same field; a server keeps the text within 8 KB for a bridge without it.
 
 **The network and code fences do not bump the version.** `hello.app_network` and `hello.app_code` only say what a bridge holds; nothing is sent differently, and an older server ignores them.
 
