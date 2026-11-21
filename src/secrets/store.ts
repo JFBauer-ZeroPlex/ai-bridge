@@ -27,8 +27,12 @@ import { rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** The revision of the `secret_*` frames this bridge answers (hello.machine_secrets). */
-export const MACHINE_SECRETS_REVISION = 1;
+/**
+ * The revision of the `secret_*` frames this bridge answers (hello.machine_secrets).
+ * 2: `secret_put` refuses an existing name (`exists`) unless it carries `replace: true`,
+ *    and its result says whether a secret was `replaced`.
+ */
+export const MACHINE_SECRETS_REVISION = 2;
 
 export const SECRET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const MAX_DESCRIPTION = 1000;
@@ -93,12 +97,20 @@ export class MachineSecretStore {
     return rowsOfTable(plain.stdout);
   }
 
-  async put(name: unknown, value: unknown, description: unknown): Promise<void> {
+  /**
+   * Add a secret, or replace one only when `replace` is exactly `true`: an existing
+   * name is otherwise refused with `exists`, so an overwrite is always deliberate.
+   * Resolves with whether an existing secret was replaced.
+   */
+  async put(name: unknown, value: unknown, description: unknown, replace: unknown = false): Promise<{ replaced: boolean }> {
     if (!validName(name)) throw new SecretRefusal('invalid_name', 'That is not a valid secret name.');
     if (typeof value !== 'string' || value === '' || Buffer.byteLength(value, 'utf8') > MAX_VALUE_BYTES || value.includes('\0')) {
       throw new SecretRefusal('invalid_request', `A secret is 1 to ${MAX_VALUE_BYTES} bytes.`);
     }
     const desc = this.description(description, false);
+
+    const existed = existsSync(join(this.store, name));
+    if (existed && replace !== true) throw new SecretRefusal('exists', `A secret named ${name} already exists.`);
 
     const incoming = join(this.store, '.incoming');
     mkdirSync(incoming, { recursive: true, mode: 0o700 });
@@ -108,13 +120,16 @@ export class MachineSecretStore {
     const tmp = join(incoming, `${name}.${randomBytes(6).toString('hex')}`);
     try {
       await writeFile(tmp, value, { mode: 0o600, flag: 'wx' });
-      const args = ['add', name, tmp, '--move', '--force'];
+      const args = ['add', name, tmp, '--move'];
+      if (replace === true) args.push('--force');
       if (desc !== null) args.push('--desc', desc);
       const done = await this.run(args);
       if (done.code !== 0) throw this.refusal(done.stderr);
     } finally {
       await rm(tmp, { force: true });
     }
+
+    return { replaced: existed };
   }
 
   async describe(name: unknown, description: unknown): Promise<void> {

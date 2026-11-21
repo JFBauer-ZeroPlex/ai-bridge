@@ -1087,8 +1087,14 @@ export class Bridge extends EventEmitter<BridgeEvents> {
 
         return;
       }
-      if (message.type === 'secret_put') await store.put(message.name, message.value, message.description);
-      else if (message.type === 'secret_describe') await store.describe(message.name, message.description);
+      if (message.type === 'secret_put') {
+        const { replaced } = await store.put(message.name, message.value, message.description, message.replace);
+        log.info('Secret store', { op: message.type, name, replaced });
+        this.send({ type: 'secret_result', id, ok: true, replaced });
+
+        return;
+      }
+      if (message.type === 'secret_describe') await store.describe(message.name, message.description);
       else await store.remove(message.name);
       log.info('Secret store', { op: message.type, name });
       this.send({ type: 'secret_result', id, ok: true });

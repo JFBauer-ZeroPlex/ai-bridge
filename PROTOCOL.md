@@ -333,7 +333,7 @@ This bridge keeps a server's [space files](#space-files) (`files_write`, `files_
 #### Additive field: `machine_secrets`
 
 ```json
-{ "type": "hello", "...": "...", "machine_secrets": { "revision": 1 } }
+{ "type": "hello", "...": "...", "machine_secrets": { "revision": 2 } }
 ```
 
 This bridge manages the machine's [secret store](#secrets-on-the-machine) for the person (`secret_list`, `secret_put`, `secret_describe`, `secret_remove`); `revision` versions those frames. A bridge that announces it also takes an appended `bridge_prompt.text` of up to 16 KB (8 KB before). Absent from a bridge that predates it: a server must not send the `secret_*` frames to it, tells the person to update the bridge, and keeps `bridge_prompt.text` within 8 KB.
@@ -2638,17 +2638,24 @@ it, add or replace a secret, change a description, remove one. The store is the
 machine's own (`~/.secrets`, one file per secret, readable only by its owner,
 and the `secret` command the iac-server toolkit installs); the bridge only runs
 that command on the server's behalf (`src/secrets/store.ts`). The bridge
-announces it in its `hello` as `"machine_secrets": {"revision": 1}`.
+announces it in its `hello` as `"machine_secrets": {"revision": 2}`.
+
+**Revision 2: a replace is always deliberate.** `secret_put` refuses a name that
+already exists with `exists`, unless it carries `replace: true`; its result then
+says `replaced: true|false`. A revision-1 bridge replaced silently and never
+answers `replaced`: a server must not offer replacing to it and should only add
+names the machine does not list yet.
 
 | Server → Bridge | What the bridge does |
 |---|---|
 | `secret_list {id}` | `secret list --json` (or the table an older tool prints) |
-| `secret_put {id, name, description?, value}` | writes `value` to a new mode-600 file in `~/.secrets/.incoming/`, then `secret add <name> <file> --move --force [--desc …]` |
+| `secret_put {id, name, description?, value, replace?}` | refuses an existing name with `exists` unless `replace` is `true`; writes `value` to a new mode-600 file in `~/.secrets/.incoming/`, then `secret add <name> <file> --move [--force when replace] [--desc …]` |
 | `secret_describe {id, name, description}` | `secret describe <name> <text>` |
 | `secret_remove {id, name}` | `secret remove <name> --yes` |
 
-Each is answered once with `secret_result {id, ok, secrets?, code?, error?}`.
-`secrets` (list only) holds `{name, description, updated_at}` rows. Codes:
+Each is answered once with `secret_result {id, ok, secrets?, replaced?, code?, error?}`.
+`secrets` (list only) holds `{name, description, updated_at}` rows; `replaced`
+(a successful put, revision 2) says whether an existing secret was replaced. Codes:
 `no_secret_tool` (the command is not installed), `not_found`, `invalid_name`,
 `invalid_request`, `exists`, `failed`.
 

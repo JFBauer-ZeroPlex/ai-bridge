@@ -1400,13 +1400,18 @@ export interface SecretListMessage {
   id: string;
 }
 
-/** Add or replace one secret. `value` is the only place a secret's value ever travels. */
+/**
+ * Add one secret, or replace one when `replace` is `true` (revision 2). Without
+ * `replace`, an existing name is refused with code `exists`. `value` is the only
+ * place a secret's value ever travels.
+ */
 export interface SecretPutMessage {
   type: 'secret_put';
   id: string;
   name: string;
   description?: string;
   value: string;
+  replace?: boolean;
 }
 
 export interface SecretDescribeMessage {
@@ -1428,6 +1433,8 @@ export interface SecretResultMessage {
   id: string;
   ok: boolean;
   secrets?: Array<{ name: string; description: string | null; updated_at: string | null }>;
+  /** On a successful `secret_put` (revision 2): whether an existing secret was replaced. */
+  replaced?: boolean;
   code?: string;
   error?: string;
 }

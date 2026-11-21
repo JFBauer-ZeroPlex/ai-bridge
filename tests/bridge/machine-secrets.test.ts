@@ -79,14 +79,28 @@ afterEach(async () => {
 
 describe('machine secrets', () => {
   it('announces machine_secrets revision 1 in the hello', () => {
-    expect(frames.find((f) => f['type'] === 'hello')!['machine_secrets']).toEqual({ revision: 1 });
+    expect(frames.find((f) => f['type'] === 'hello')!['machine_secrets']).toEqual({ revision: 2 });
   });
 
   it('stores a secret_put and answers ok, without the value in anything it sends', async () => {
     socket.send(JSON.stringify({ type: 'secret_put', id: 'sec-1', name: 'mailtrap', description: 'SMTP', value: VALUE }));
     const result = await waitFor((f) => f['type'] === 'secret_result' && f['id'] === 'sec-1', 'secret_result');
 
-    expect(result).toEqual({ type: 'secret_result', id: 'sec-1', ok: true });
+    expect(result).toEqual({ type: 'secret_result', id: 'sec-1', ok: true, replaced: false });
+    expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe(VALUE);
+    expect(raw.join('\n')).not.toContain(VALUE);
+  });
+
+  it('refuses to overwrite without replace, and replaces with replace: true', async () => {
+    writeFileSync(join(store, 'mailtrap'), 'old');
+    socket.send(JSON.stringify({ type: 'secret_put', id: 'sec-5', name: 'mailtrap', value: VALUE }));
+    const refused = await waitFor((f) => f['type'] === 'secret_result' && f['id'] === 'sec-5', 'refused put');
+    expect(refused).toMatchObject({ ok: false, code: 'exists' });
+    expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe('old');
+
+    socket.send(JSON.stringify({ type: 'secret_put', id: 'sec-6', name: 'mailtrap', value: VALUE, replace: true }));
+    const replaced = await waitFor((f) => f['type'] === 'secret_result' && f['id'] === 'sec-6', 'replace put');
+    expect(replaced).toEqual({ type: 'secret_result', id: 'sec-6', ok: true, replaced: true });
     expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe(VALUE);
     expect(raw.join('\n')).not.toContain(VALUE);
   });

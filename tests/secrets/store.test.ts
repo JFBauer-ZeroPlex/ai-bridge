@@ -57,13 +57,14 @@ describe('put', () => {
     fakeTool();
     const secrets = new MachineSecretStore({ bin, store });
 
-    await secrets.put('mailtrap', VALUE, 'SMTP\npassword');
+    const result = await secrets.put('mailtrap', VALUE, 'SMTP\npassword');
 
+    expect(result).toEqual({ replaced: false });
     expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe(VALUE);
     const [args] = callsMade();
     expect(args!.slice(0, 2)).toEqual(['add', 'mailtrap']);
     expect(args).toContain('--move');
-    expect(args).toContain('--force');
+    expect(args).not.toContain('--force');
     expect(args!.slice(-2)).toEqual(['--desc', 'SMTP password']);
     expect(JSON.stringify(callsMade())).not.toContain(VALUE);
     expect(readdirSync(join(store, '.incoming'))).toEqual([]);
@@ -80,6 +81,33 @@ describe('put', () => {
     expect((error as SecretRefusal).code).toBe('exists');
     expect((error as Error).message).not.toContain(VALUE);
     expect(readdirSync(join(store, '.incoming'))).toEqual([]);
+  });
+
+  it('refuses an existing name without replace, before running anything (revision 2)', async () => {
+    fakeTool();
+    writeFileSync(join(store, 'mailtrap'), 'old', { mode: 0o600 });
+    const secrets = new MachineSecretStore({ bin, store });
+
+    const error = await secrets.put('mailtrap', VALUE, null).catch((e: unknown) => e);
+
+    expect((error as SecretRefusal).code).toBe('exists');
+    expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe('old');
+    expect(callsMade()).toEqual([]);
+    for (const loose of ['true', 1, 'yes']) {
+      await expect(secrets.put('mailtrap', VALUE, null, loose)).rejects.toMatchObject({ code: 'exists' });
+    }
+  });
+
+  it('replaces an existing name only with replace: true, and says it replaced', async () => {
+    fakeTool();
+    writeFileSync(join(store, 'mailtrap'), 'old', { mode: 0o600 });
+    const secrets = new MachineSecretStore({ bin, store });
+
+    const result = await secrets.put('mailtrap', VALUE, null, true);
+
+    expect(result).toEqual({ replaced: true });
+    expect(readFileSync(join(store, 'mailtrap'), 'utf8')).toBe(VALUE);
+    expect(callsMade()[0]).toContain('--force');
   });
 
   it('refuses a name that could leave the store, and an empty value, before running anything', async () => {
