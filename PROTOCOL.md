@@ -1189,7 +1189,7 @@ Validation is strict, and a contradictory spec is refused with `bridge_prompt_in
 | `append` | absent or empty | **Refused.** Says it is adding something and adds nothing. |
 | `replace` | absent or empty | **Refused.** Would silently mean `off`. |
 
-Server-supplied text is capped at 8 KB. A cap with a clear refusal beats a `spawn E2BIG` at launch, which surfaces as a turn that failed for no visible reason.
+Server-supplied text is capped at 16 KB. A cap with a clear refusal beats a `spawn E2BIG` at launch, which surfaces as a turn that failed for no visible reason.
 
 **The addendum is generated from the resolved environment, not shipped as a fixed string.** If a project uses `bridge_env` to turn background work back on, an addendum still saying the capability is disabled would be lying to the model about something it can observe directly in its own tool schema. The lifecycle bullets change with the configuration; "one process per turn, nothing survives it" is stated either way, because it is true either way.
 
@@ -2622,6 +2622,34 @@ answer.
 
 ---
 
+## Secrets on the machine
+
+The server can manage the secret store on this machine for the person: list
+it, add or replace a secret, change a description, remove one. The store is the
+machine's own (`~/.secrets`, one file per secret, readable only by its owner,
+and the `secret` command the iac-server toolkit installs); the bridge only runs
+that command on the server's behalf (`src/secrets/store.ts`). The bridge
+announces it in its `hello` as `"machine_secrets": {"revision": 1}`.
+
+| Server → Bridge | What the bridge does |
+|---|---|
+| `secret_list {id}` | `secret list --json` (or the table an older tool prints) |
+| `secret_put {id, name, description?, value}` | writes `value` to a new mode-600 file in `~/.secrets/.incoming/`, then `secret add <name> <file> --move --force [--desc …]` |
+| `secret_describe {id, name, description}` | `secret describe <name> <text>` |
+| `secret_remove {id, name}` | `secret remove <name> --yes` |
+
+Each is answered once with `secret_result {id, ok, secrets?, code?, error?}`.
+`secrets` (list only) holds `{name, description, updated_at}` rows. Codes:
+`no_secret_tool` (the command is not installed), `not_found`, `invalid_name`,
+`invalid_request`, `exists`, `failed`.
+
+- A name is 1 to 64 characters `[A-Za-z0-9._-]`, starting with a letter or
+  digit, never `..`, checked before anything runs.
+- The value only ever travels IN. It is never a command-line argument or an
+  environment variable, never logged (only the operation and the name are), and
+  never in an answer or an error.
+- The command runs without a shell.
+
 ## Heartbeat
 
 Keeps the WebSocket alive and detects dead connections.
@@ -2670,7 +2698,7 @@ The server also tracks heartbeats. If no `ping` is received for 2x the heartbeat
 | `working_dir_not_allowed` | The `working_dir` is not inside a root the operator permitted with `--allow-dir` (or none were permitted). Also emitted on a turn that named NOTHING, when the directory its CLI session is remembered in has since been revoked | Operator restarts the bridge with `--allow-dir`, or the server offers only the `workspaces` from `hello`. Terminal: `done` follows |
 | `working_dir_not_found` | The named `working_dir` is inside an allowed root but does not exist, or is not a directory. The bridge never creates it | Check the path. Terminal: `done` follows |
 | `working_dir_changed` | A resume named a different directory from the one its CLI session was started in | Server starts a fresh session deliberately. Terminal: `done` follows |
-| `bridge_prompt_invalid` | The `bridge_prompt` contradicts itself — text with a mode that discards it, `append`/`replace` with nothing to add, an unknown mode, or text over the 8 KB cap | Server fixes the field. Terminal: `done` follows |
+| `bridge_prompt_invalid` | The `bridge_prompt` contradicts itself — text with a mode that discards it, `append`/`replace` with nothing to add, an unknown mode, or text over the 16 KB cap | Server fixes the field. Terminal: `done` follows |
 | `attachment_refused` | An attachment URL is not on the connected server's origin, or is not HTTPS | Server fixes the URL (or the operator sets `--api`). Terminal: `done` follows |
 | `attachment_too_large` | An attachment exceeds the per-file, per-request or count cap (all three are reported in `hello` as `attachment_limits`) | Server sends a smaller file, or the operator raises `--attachment-max-mb` / `--attachment-total-mb` / `--attachment-max-count`. Terminal: `done` follows |
 | `attachment_failed` | An attachment could not be downloaded — including one that stalled or ran past the per-file ceiling — or failed its size/checksum verification | Retry; for a stall or ceiling on a slow link, the operator raises `--attachment-stall-seconds` / `--attachment-timeout-minutes`. Terminal: `done` follows |
@@ -2841,6 +2869,7 @@ Treating the first `result` as terminal is what this replaces, and it was not a 
 | `upstream_auth_result` | Answering an `upstream_auth_code` (or a failed `upstream_auth_start`) |
 | `cancelled` | A turn stopped because the server asked |
 | `local_result` | Answering a `local_call`, run or refused |
+| `secret_result` | Answering a `secret_*` request (never carries a value) |
 | `error` | Request-level error (non-streaming) |
 
 ### Server → Bridge
@@ -2865,6 +2894,7 @@ Treating the first `result` as terminal is what this replaces, and it was not a 
 | `upstream_auth_start` | The person asked to (re)connect an OAuth upstream |
 | `upstream_auth_code` | The sign-in redirect's parameters, passed on |
 | `upstream_auth_forget` | Forget an OAuth upstream's tokens on this bridge |
+| `secret_list` / `secret_put` / `secret_describe` / `secret_remove` | Manage the machine's secret store (`hello.machine_secrets`) |
 
 ---
 
